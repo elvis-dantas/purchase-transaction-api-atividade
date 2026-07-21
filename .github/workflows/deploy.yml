@@ -1,0 +1,77 @@
+name: CI/CD - Test, Build, Push e Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Permissão Gradle
+        run: chmod +x gradlew
+
+      - name: Executar testes
+        run: ./gradlew clean test
+
+  build-and-deploy:
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Build
+        run: ./gradlew clean build
+
+      - name: Login no Registry
+        run: |
+          echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login \
+          ${{ secrets.REGISTRY_SERVER }} \
+          -u "${{ secrets.REGISTRY_USER }}" \
+          --password-stdin
+
+      - name: Build da imagem
+        run: |
+          docker build -t \
+          ${{ secrets.REGISTRY_SERVER }}/purchase-api/purchase-api:${{ github.sha }} .
+
+      - name: Push da imagem
+        run: |
+          docker push \
+          ${{ secrets.REGISTRY_SERVER }}/purchase-api/purchase-api:${{ github.sha }}
+
+      - name: Configurar kubectl
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > ~/.kube/config
+
+      - name: Atualizar manifesto
+        run: |
+          sed -i "s|DOCKER_IMAGE_PLACEHOLDER|${{ secrets.REGISTRY_SERVER }}/purchase-api/purchase-api:${{ github.sha }}|g" k3s/app-purchase-transaction.yml
+
+      - name: Deploy
+        run: |
+          kubectl apply -f k3s/app-purchase-transaction.yml
+
+      - name: Aguardar rollout
+        run: |
+          kubectl rollout status deployment/purchase-api
